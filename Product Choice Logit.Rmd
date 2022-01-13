@@ -1,0 +1,461 @@
+---
+title: "Product Choice Logit"
+author: "Amelia Morrissey"
+date: "2/11/2021"
+output: html_document
+---
+
+```{r}
+library(readxl)
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(tibble)
+library(data.table)
+```
+
+#Read in the Filtered Data
+```{r}
+Filtered <- read_excel("C:/Users/staff/PVTA Dropbox/PVTA-PVPC/Mobile Data Analysis/Data/Formatted Data/Archive/Filtered_03312021.xlsx")
+
+Filtered <- Filtered_03312021
+```
+
+Filter for UUID accounts that only use the four major fare types exclusively. 
+This includes filtering out E&D riders for now.
+-PPU (One Ride, Transfers)
+-Day Passes
+-7 Day Passes
+-31 Day Passes
+
+Format
+```{r}
+#mark any UUIDs who have used non-main pass types, and rename pass Faretypes
+#to combine E&D and Regular since that distinction will be on the account
+#level rather than the pass level
+Product_Choice <- Filtered %>%
+  group_by(UUID) %>%
+  mutate(filter_out = any(Faretype == "Children's One Ride " | 
+         Faretype == "Senior Tuesday " |
+         Faretype == "Holyoke Community College Fall Semester " |
+         Faretype == "Holyoke Community College Spring Semester ")) %>%
+  filter(!filter_out) %>%
+  mutate(Faretype = ifelse(Faretype == "One Ride E & D ", "One Ride ", Faretype)) %>%
+  mutate(Faretype = ifelse(Faretype == "Transfer E & D ", "Transfer", Faretype)) %>%
+  mutate(Faretype = ifelse(Faretype == "31 Day E & D ", 
+                        "31 Day Pass ", Faretype)) %>%
+  mutate(Faretype = ifelse(Faretype == "31 Day Regular ", 
+                        "31 Day Pass ", Faretype)) 
+
+#Also change PPU passes to be called PPU
+Product_Choice <- Product_Choice %>% 
+   mutate(Faretype = ifelse(Faretype == "One Ride ", "PPU", Faretype)) %>%
+   mutate(Faretype = ifelse(Faretype == "Transfer", "PPU", Faretype))
+
+#remove the first week of data
+Product_Choice <- Product_Choice %>% 
+  filter(Date >= ymd("2020-07-27"))
+
+
+#separate E&D riders from non-E&D
+#we will consider these groups separately
+# Product_Choice_Reg <- Product_Choice %>%
+#   filter(!ED)
+# 
+Product_Choice_ED <- Product_Choice %>%
+  filter(ED)
+```
+
+Aggregate on Day Level and Get User's Choice
+```{r}
+Product_Choice_Reg <- Product_Choice
+#aggregate on the daily Level
+Product_Choice_Reg <- Product_Choice_Reg %>%
+  mutate(count = 1) %>%
+  group_by(Date, UUID) %>%
+  summarise(D31_Rides = sum(count[Faretype == "31 Day Pass "]),
+            D7_Rides = sum(count[Faretype == "7 Day Pass"]),
+            Day_Rides = sum(count[Faretype == "Day Pass"]),
+            PPU_Rides = sum(count[Faretype == "PPU"]) )
+Product_Choice_Reg$rowname <- as.character(seq.int(nrow(Product_Choice_Reg)))
+
+# Get the user's "choice" on that day, i.e. the most used pass type
+#library(tidyr)
+#library(tibble)
+temp <- Product_Choice_Reg %>% 
+  ungroup() %>%
+  select(D31_Rides, D7_Rides, Day_Rides, PPU_Rides) 
+temp <- temp %>%
+  rownames_to_column() %>%
+  gather(column, value, -rowname) %>%
+  group_by(rowname) %>% 
+  filter(rank(-value) == 1) %>%
+  select(-value)
+
+Product_Choice_Reg <- left_join(Product_Choice_Reg, temp)
+
+#for any cases where the person used an equal amount of two pass types
+#we will just remove these cases since we don't know their choice
+Product_Choice_Reg <- Product_Choice_Reg %>%
+  dplyr::rename(choice = column) %>%
+  filter(!is.na(choice))
+```
+
+Find Use Value and Active Days from the previous week
+```{r}
+
+# #remove the first week since it's ride count will not include a full 7 days
+# Product_Choice <- Product_Choice %>%
+#   filter(Date >= lubridate::ymd("2020-07-27"))
+
+#count the number of rides within the past 7 days
+
+#for each UUID Date in Product_Choice_Reg, create an interval for the past 7 days
+#then intersect
+
+
+
+
+
+
+#this takes up a lot of memory so break the data set into sections by UUID
+Product_Choice <- Product_Choice %>%
+  mutate(UUID_section = cut(UUID, breaks = seq(0, 3000, by = 100)))
+
+Product_Choice$UUID_section <- Product_Choice %>%
+  group_indices(UUID_section)
+
+sections = n_distinct(Product_Choice$UUID_section)
+
+#initialize week rides by running through with i = 1
+i = 1 
+data <- Product_Choice %>% 
+  ungroup() %>%
+  filter(UUID_section == i) %>%
+  select(UUID, Date) %>%
+  mutate(Cust_ID = as.character(UUID),
+         Record_Date = as.Date(Date)) %>%
+  select(-UUID, -Date)
+data <- as.data.table(data)
+
+data_1 <- distinct(data)
+  
+
+week_rides <- 
+  data[,as.list(data[,list(Cust_ID2=Cust_ID,Compare_Date=Record_Date)]),
+  by=c("Cust_ID","Record_Date")][Cust_ID==Cust_ID2 & Compare_Date<Record_Date,list(Cust_ID,Record_Date,Compare_Date,
+    Within7=(as.numeric(Record_Date-Compare_Date)<=7)*1)][,list(Within7=(sum(Within7))),by=c("Cust_ID","Record_Date")]  
+
+
+week_active <-
+  data_1[,as.list(data_1[,list(Cust_ID2=Cust_ID,Compare_Date=Record_Date)]),
+  by=c("Cust_ID","Record_Date")][Cust_ID==Cust_ID2 & Compare_Date<Record_Date,list(Cust_ID,Record_Date,Compare_Date,
+    Within7=(as.numeric(Record_Date-Compare_Date)<=7)*1)][,list(Within7=(sum(Within7))),by=c("Cust_ID","Record_Date")]  
+
+
+for(i in (2:sections)){
+data <- Product_Choice %>% 
+  ungroup() %>%
+  filter(UUID_section == i) %>%
+  select(UUID, Date) %>%
+  mutate(Cust_ID = as.character(UUID), 
+         Record_Date = as.Date(Date)) %>%
+  select(-UUID, -Date)
+data <- as.data.table(data)
+
+data_1 <- distinct(data)
+
+output_rides <- 
+  data[,as.list(data[,list(Cust_ID2=Cust_ID,Compare_Date=Record_Date)]),
+  by=c("Cust_ID","Record_Date")][Cust_ID==Cust_ID2 & Compare_Date<Record_Date,list(Cust_ID,Record_Date,Compare_Date,
+    Within7=(as.numeric(Record_Date-Compare_Date)<=7)*1)][,list(Within7=(sum(Within7))),by=c("Cust_ID","Record_Date")]      
+
+output_active <-
+  data_1[,as.list(data_1[,list(Cust_ID2=Cust_ID,Compare_Date=Record_Date)]),
+  by=c("Cust_ID","Record_Date")][Cust_ID==Cust_ID2 & Compare_Date<Record_Date,list(Cust_ID,Record_Date,Compare_Date,
+    Within7=(as.numeric(Record_Date-Compare_Date)<=7)*1)][,list(Within7=(sum(Within7))),by=c("Cust_ID","Record_Date")]  
+
+#add these rides to the week_rides and week_active dfs
+week_rides = rbind(week_rides, output_rides)
+week_active = rbind(week_active, output_active)
+}
+
+#reformat for joining
+week_rides <- week_rides %>%
+  dplyr::rename("UUID" = "Cust_ID",
+                "Date" = "Record_Date") %>%
+  dplyr::rename("week_rides" = "Within7") %>%
+  mutate(UUID = as.integer(UUID))
+  
+week_active <- week_active %>%
+  dplyr::rename("UUID" = "Cust_ID",
+                "Date" = "Record_Date") %>%
+  dplyr::rename("week_active" = "Within7") %>%
+  mutate(UUID = as.integer(UUID))
+  
+```
+
+Join in the past week's rides and active days
+```{r}
+#join the week_rides  and week_active days to the Product_Choice df
+Product_Choice_Reg <- left_join(Product_Choice_Reg, week_rides)
+Product_Choice_Reg <- left_join(Product_Choice_Reg, week_active)
+
+
+
+```
+
+```{r}
+#replace past week cost and choice for passholding days with 
+#the pass start day's choice scenario
+
+#get first and last day of each pass ID for non-PPU
+temp <- Product_Choice %>%
+  filter(Faretype != "PPU" & Faretype != "Day Pass") %>%
+  group_by(Id) %>%
+  mutate(min_date = min(date(FTime_Scanned))) #%>%
+  # mutate(First = ifelse((date(FTime_Scanned) == min_date), 
+  #                       T, F))#,
+         #last_date = ifelse(Faretype == "7 Day Pass", min_date+7, min_date+31))
+
+#if a date is a first passholding day, it remains the same
+#but if it is not first and it is a pass Faretype choice, then replace the 
+#choice scenario with the most recent first day by that UUID
+temp <- temp %>%
+  ungroup() %>%
+  select(UUID, Date, min_date) %>%
+  distinct()
+
+Product_Choice_Reg <- left_join(Product_Choice_Reg, temp)
+
+temp1 <- Product_Choice_Reg %>%
+  filter(min_date == Date) %>%
+  ungroup() %>%
+  select(min_date, UUID, week_rides, week_active) %>%
+  dplyr::rename("week_rides2" = "week_rides",
+                "week_active2" = "week_active")
+
+Product_Choice_Reg1 <- left_join(temp1, Product_Choice_Reg)
+Product_Choice_Reg <- left_join(Product_Choice_Reg, Product_Choice_Reg1)
+
+#fill in the ppu and day pass week rides and active days
+Product_Choice_Reg <- Product_Choice_Reg %>%
+  mutate(week_rides2 = ifelse(is.na(week_rides2) & is.na(min_date), 
+                              week_rides, week_rides2)) %>%
+  mutate(week_active2 = ifelse(is.na(week_active2) & is.na(min_date), week_active, week_active2))
+
+rm(Product_Choice_Reg1)
+
+
+```
+
+Do we need to fill in non-active pass-holding days with the initial pass purchase choice scenario?
+
+Remove choices after 7+ days of inactivity
+```{r}
+#NA indicates that this is the first day this user has ever been active
+#we will remove these, as well as any dates with 0 rides in the past week 
+#This includes any passholding days where the original pass choice scenario was 
+#the first in at least 7 days, so we use week_rides2 for the passes
+Product_Choice_Reg <- Product_Choice_Reg %>%
+  filter(!is.na(week_rides2) & week_rides2 != 0)
+
+table(Product_Choice_Reg$choice)
+```
+
+Calculate past week's cost for each fare type
+```{r}
+# One_Ride_Fare = 1.5
+One_Ride_Fare = 0.75
+# Transfer_Fare = 0.25
+Transfer_Fare = 0.1
+Day_Fare = 3.5
+D7_Fare = 15
+# D31_Fare = 54
+D31_Fare = 26
+
+
+
+Product_Choice_Reg <- Product_Choice_Reg %>%
+  mutate(week_cost_PPU = round(
+           (week_rides2-week_rides2*evasion_trans_rate)*One_Ride_Fare +
+           week_rides2*evasion_trans_rate*Transfer_Fare, digits=2),
+         week_cost_Day = Day_Fare*week_active2,
+         week_cost_7D = D7_Fare, 
+         week_cost_31D = round(D31_Fare*(7/31), digits=2))
+
+```
+
+Remove unnecessary variables
+```{r}
+Product_Choice_Reg <- Product_Choice_Reg %>%
+  select(-rowname, -D31_Rides, -D7_Rides, -Day_Rides, -PPU_Rides, 
+         -week_rides, -week_active, -min_date) %>%
+  dplyr::rename("week_rides" = "week_rides2",
+                "week_active" = "week_active2")
+```
+
+Bin the choice scenarios by the past weeks use value
+```{r}
+# Bin_Width = 4
+# Top_Bin = 32 + Bin_Width
+# 
+# 
+# #break into use value bins
+# Product_Choice_Reg <- Product_Choice_Reg %>%
+#   mutate(week_cost_PPU_capped = ifelse(week_cost_PPU > Top_Bin, 
+#                                       Top_Bin, week_cost_PPU)) %>%
+#   mutate(week_cost_Bin = cut(week_cost_PPU_capped, breaks = 
+#                                seq(0, Top_Bin, by = Bin_Width)))
+```
+
+
+Calculate Weights to Scale up to entire ridership population from mobile
+```{r}
+#create FY21 Actuals df
+Ridership_Actuals <- data.frame(choice = c("PPU", "Day", 
+                                         "7D", "31D"),
+                 FY21Jul_Dec_Rides = c(552845, 290410, 45722, 321636) )
+
+#including E&D rides: c(552845, 290410, 45722, 321636) )
+
+
+#calculate weights
+Weights <- Product_Choice_Reg %>%
+  group_by(choice) %>%
+  summarise(choice_days = n_distinct(UUID, Date)) %>%
+ #  dplyr::rename("Pass" = "choice") #%>%
+  mutate(choice = ifelse(choice == "PPU_Rides", "PPU", choice)) %>%
+  mutate(choice = ifelse(choice == "Day_Rides", "Day", choice)) %>%
+  mutate(choice = ifelse(choice == "D7_Rides", "7D", choice)) %>%
+  mutate(choice = ifelse(choice == "D31_Rides", "31D", choice))
+
+Weights <- left_join(Weights, Ridership_Actuals)
+
+Weights <- Weights %>%
+  mutate(weight = FY21Jul_Dec_Rides/choice_days) %>%
+  mutate(weight = round(weight, digits = 2)) %>%
+  select(choice, weight)
+
+#wide format#
+##################
+
+# #create FY21 Actuals df
+# Ridership_Actuals <- data.frame(choice.PPU = c(1,0,0,0),
+#                                 choice.Day = c(0,1,0,0),
+#                                 choice.D7 = c(0,0,1,0),
+#                                 choice.D31 = c(0,0,0,1),
+#                  FY21Jul_Dec_Rides = c(552845, 290410, 45722, 321636) )
+
+#calculate weights
+Weights <- Product_Choice_Reg %>%
+  group_by(choice) %>%
+  summarise(choice_days = n_distinct(UUID, Date)) %>%
+ #  dplyr::rename("Pass" = "choice") #%>%
+  mutate(choice = ifelse(choice == "PPU_Rides", "PPU", choice)) %>%
+  mutate(choice = ifelse(choice == "Day_Rides", "Day", choice)) %>%
+  mutate(choice = ifelse(choice == "D7_Rides", "7D", choice)) %>%
+  mutate(choice = ifelse(choice == "D31_Rides", "31D", choice))
+
+Weights <- left_join(Weights, Ridership_Actuals)
+
+Weights <- Weights %>%
+  mutate(weight = FY21Jul_Dec_Rides/choice_days) %>%
+  mutate(weight = round(weight, digits = 2)) %>%
+  select(choice, weight)
+```
+
+
+
+Calculate weights based on use value bin
+```{r}
+# #get the total number of trips in each bin
+# Bin_Trips <- Filtered %>%
+#   ungroup() %>%
+#   mutate(filter_out = (Faretype == "Children's One Ride " | 
+#          Faretype == "Senior Tuesday " |
+#          Faretype == "Holyoke Community College Fall Semester " |
+#          Faretype == "Holyoke Community College Spring Semester ")) %>%
+#   filter(!filter_out) %>%
+#   mutate(Faretype = ifelse(Faretype == "One Ride E & D ", "One Ride ", Faretype)) %>%
+#   mutate(Faretype = ifelse(Faretype == "Transfer E & D ", "Transfer", Faretype)) %>%
+#   mutate(Faretype = ifelse(Faretype == "31 Day E & D ", 
+#                         "31 Day Pass", Faretype)) %>%
+#   mutate(Faretype = ifelse(Faretype == "31 Day Regular ", 
+#                         "31 Day Pass", Faretype)) %>%
+#   select(-filter_out)
+# 
+# #Also change PPU passes to be called PPU
+# Bin_Trips <- Bin_Trips %>% 
+#    mutate(Faretype = ifelse(Faretype == "One Ride ", "PPU", Faretype)) %>%
+#    mutate(Faretype = ifelse(Faretype == "Transfer", "PPU", Faretype))
+# 
+# Bin_Trips <- Bin_Trips %>%
+# filter(!ED) %>%
+#   group_by(Use_Value_evasion_Bin, Faretype) %>%
+#   summarise(trips = n()) %>%
+#   dplyr::rename("week_cost_Bin" = "Use_Value_evasion_Bin")
+# 
+# 
+# #get number of days in the choice days data bins
+# Bin_Days <- Product_Choice_Reg %>%
+#   group_by(week_cost_Bin, choice) %>%
+#   summarise(choice_days = n())
+# 
+# #calculate weights
+# Bin_Weights <- left_join(Bin_Days, Bin_Trips)
+# Bin_Weights <- Bin_Weights %>%
+#   mutate(weight = round(trips/choice_days, digits=2))
+```
+
+
+
+Data Expansion (Long format) and Mlogit regression
+```{r}
+mydata <- Product_Choice_Reg %>%
+  ungroup() %>%
+  select(choice, week_cost_PPU, week_cost_Day, week_cost_7D, week_cost_31D) %>%
+  dplyr::rename("week_cost.PPU" = "week_cost_PPU",
+                "week_cost.Day" = "week_cost_Day",
+                "week_cost.7D" = "week_cost_7D",
+                "week_cost.31D" = "week_cost_31D")
+
+mydata <- mydata %>%
+  mutate(choice = ifelse(choice == "PPU_Rides", "PPU", choice),
+         choice = ifelse(choice == "Day_Rides", "Day", choice),
+         choice = ifelse(choice == "D7_Rides", "7D", choice),
+         choice = ifelse(choice == "D31_Rides", "31D", choice)
+         )
+
+# mydata <- mydata %>%
+#   mutate(choice.PPU = ifelse(choice == "PPU_Rides", 1, 0),
+#          choice.Day = ifelse(choice == "Day_Rides", 1, 0),
+#          choice.7D = ifelse(choice == "D7_Rides", 1, 0),
+#          choice.31D = ifelse(choice == "D31_Rides", 1, 0)
+#          )
+
+#add weights to mydata
+library(mlogit)
+mydata <- left_join(mydata, Weights)
+mydata$choice <- as.factor(mydata$choice)
+mldata <- dfidx(mydata, varying=2:5, choice="choice", shape="wide")
+
+mlogit <- mlogit(choice ~ week_cost, data=mldata, reflevel="PPU")
+
+summary(mlogit)
+
+```
+
+```{r}
+#For Day Passes,what is the averge num. trips per day?
+Day <- Filtered %>%
+  filter(Faretype == "Day Pass")
+
+Day<- Day %>%
+  group_by(UUID, Date) %>%
+  summarise(n = n())
+
+mean(Day$n)
+```
+
+
